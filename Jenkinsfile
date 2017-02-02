@@ -13,7 +13,9 @@ node('buildvm-devops') {
 
     stage('Merge and build') {
         try {
-            sh "./merge-and-build.sh --major=${OSE_MAJOR} --minor=${OSE_MINOR}"
+            sh "ssh-add ~/.ssh/id_rsa" /* ssh credentials for github */
+            sh "kinit -k -t $KEYTAB $PRINCIPLE"
+            sh "./merge-and-build.sh ${OSE_MAJOR} ${OSE_MINOR}"
 
             def specVersion = readFile( file: 'ose/origin.spec' ).find( /Version: ([.0-9]+)/) {
                 full, ver -> return ver;
