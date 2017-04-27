@@ -4,13 +4,14 @@ GIT_ROOT="/home/opsmedic/aos-cd/git"
 
 function print_usage() {
   echo
-  echo "Usage: $(basename $0) <clusterid> <operation> [options]"
+  echo "Usage: $(basename $0) <cluster-name> <operation> [options]"
   echo "Examples:"
   echo
-  echo "    $(basename $0) testcluster install"
-  echo "    $(basename $0) testcluster delete"
-  echo "    $(basename $0) testcluster upgrade"
-  echo "    $(basename $0) testcluster status"
+  echo "    $(basename $0) test-key install"
+  echo "    $(basename $0) test-key delete"
+  echo "    $(basename $0) test-key upgrade"
+  echo "    $(basename $0) test-key status"
+  echo "    $(basename $0) test-key logs"
   echo
 }
 
@@ -52,6 +53,15 @@ cd "$(dirname "$0")"
 
 export CLUSTERNAME=$1
 export OPERATION=$2
+
+################################################
+# CLUSTER LOGS
+################################################
+if [ "${OPERATION}" == "logs" ]; then
+    ./gather-logs.sh "${CLUSTERNAME}"
+    exit 0
+fi
+
 shift 2
 ARGS="$@"
 
@@ -207,10 +217,9 @@ elif [ "${OPERATION}" == "upgrade" ]; then
 ################################################
 elif [ "${OPERATION}" == "status" ]; then
 
-  # Run the upgrade, including post_byo steps and config loop
-  pushd ~/aos-cd/git/openshift-ansible-ops/playbooks/release/bin
-    /usr/local/bin/autokeys_loader ./aos-cd-cluster-status.sh ${CLUSTERNAME}
-  popd
+    pushd ~/aos-cd/git/openshift-ansible-ops/playbooks/release/bin
+        /usr/local/bin/autokeys_loader ./aos-cd-cluster-status.sh ${CLUSTERNAME}
+    popd
 
 else
   echo Error. Unrecognized operation. Exiting...
