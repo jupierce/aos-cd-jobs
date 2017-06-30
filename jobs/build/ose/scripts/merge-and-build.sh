@@ -11,7 +11,7 @@ set -o pipefail
 function get_version_fields {
     COUNT="$1"
 
-    if [ "$COUNT" == "0" ]; then
+    if [ "$COUNT" == "" ]; then
         echo "Invalid number of Version fields specified: $COUNT"
         return 1
     fi
@@ -22,13 +22,17 @@ function get_version_fields {
 
     # If there are more fields than we expect OR we would need to add more than one field,
     # something has gone wrong.
-    if [ "$CURRENT_COUNT" -gt "$COUNT" -o "$(($CURRENT_COUNT + 1))" -lt "$COUNT" ]; then
+    if [ "$CURRENT_COUNT" -gt "$COUNT" ]; then
         echo "Unexpected number of fields in current version: $CURRENT_COUNT ; expected less-than-or-equal to $COUNT"
         return 1
     fi
 
     if [ "$CURRENT_COUNT" -lt "$COUNT" ]; then
-        echo -n "${V}.0"
+        echo -n "${V}"
+        while [ "$CURRENT_COUNT" -lt "$COUNT" ]; do
+            echo -n ".0"
+            CURRENT_COUNT=$(($CURRENT_COUNT + 1))
+        done
     else
         # Extract the value of the last field
         MINOREST_FIELD="$(echo -n ${V} | rev | cut -d . -f 1 | rev)"
@@ -194,7 +198,7 @@ else
 
 fi
 
-export TITO_USE_VERSION="--use-version $(get_version_fields $SPEC_VERSION_COUNT)"
+export TITO_USE_VERSION="--use-version $(get_version_fields ${SPEC_VERSION_COUNT})"
 echo "set: $TITO_USE_VERSION"
 exit 0
 
