@@ -1,5 +1,6 @@
 
-def clusterList = [ "int:test-key",
+def getName() {
+  return [ "int:test-key",
                 "int:free-int",
                 "stg:free-stg",
                 "prod:starter-us-east-1",
@@ -7,3 +8,4 @@ def clusterList = [ "int:test-key",
                 "prod:starter-us-west-1",
                 "prod:starter-us-west-2",
     ]
+)
