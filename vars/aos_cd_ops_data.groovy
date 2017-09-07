@@ -1,4 +1,4 @@
-class aos_cd_data implements Serializable {
+class aos_cd_ops_data implements Serializable {
 
     def getClusterList(group) {
         if ( group == "starter" ) {
