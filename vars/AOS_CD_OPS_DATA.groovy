@@ -1,5 +1,5 @@
 
-def getName() {
+def getClusterList() {
   return [ "int:test-key",
                 "int:free-int",
                 "stg:free-stg",
