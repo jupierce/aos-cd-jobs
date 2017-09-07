@@ -8,4 +8,4 @@ def getName() {
                 "prod:starter-us-west-1",
                 "prod:starter-us-west-2",
     ]
-)
+}
