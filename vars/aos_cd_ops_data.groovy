@@ -11,7 +11,7 @@ class aos_cd_ops_data implements Serializable {
                     "prod:starter-us-west-2",
             ]
         }
-        return [ "int:!UnknkownClusterGroup-" + group ]
+        return [ "int:!UnknkownClusterGroup!-" + branch ]
     }
 
 }
