@@ -1,14 +1,14 @@
 class aos_cd_ops_data implements Serializable {
 
     def getClusterList(branch) {
-        if ( branch.startsWith("cluster") || branch.contains("starter") ) {
-            return [ "starter:int:free-key",
-                    "starter:int:free-int",
-                    "starter:stg:free-stg",
-                    "starter:prod:starter-us-east-1",
-                    "starter:prod:starter-us-east-2",
-                    "starter:prod:starter-us-west-1",
-                    "starter:prod:starter-us-west-2",
+        if ( branch.startsWith("cluster") || branch.contains("starter") || branch.contains("online") ) {
+            return [ "online:int:free-key",
+                    "online:int:free-int",
+                    "online:stg:free-stg",
+                    "online:prod:starter-us-east-1",
+                    "online:prod:starter-us-east-2",
+                    "online:prod:starter-us-west-1",
+                    "online:prod:starter-us-west-2",
             ]
         }
 
