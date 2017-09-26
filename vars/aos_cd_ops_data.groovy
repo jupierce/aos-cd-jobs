@@ -13,7 +13,13 @@ class aos_cd_ops_data implements Serializable {
         }
 
         if ( branch.contains("dedicated") ) {
-            return [ "dedicated:stg:yocum-test-5",
+            return [ 
+                    "dedicated:int:ded-int-aws",
+                    "dedicated:int:ded-int-gcp",
+                    "dedicated:stg:ded-stage-aws",
+                    "dedicated:stg:ded-stage-gcp",
+                    "dedicated:stg:ded-stg2-aws",
+                    "dedicated:stg:yocum-test-5",
             ]
         }
         
