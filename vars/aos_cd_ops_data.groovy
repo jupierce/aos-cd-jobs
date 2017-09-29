@@ -5,6 +5,7 @@ class aos_cd_ops_data implements Serializable {
             return [ "online:int:free-key",
                     "online:int:free-int",
                     "online:stg:free-stg",
+                    "online:prod:starter-ca-central-1",
                     "online:prod:starter-us-east-1",
                     "online:prod:starter-us-east-2",
                     "online:prod:starter-us-west-1",
