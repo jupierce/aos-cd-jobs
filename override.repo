@@ -1,0 +1,5 @@
+[docker-113-override]
+gpgcheck = 0
+enabled = 1
+baseurl = http://download.eng.bos.redhat.com/nightly/EXTRAS-RHEL-7.5/latest-EXTRAS-7-RHEL-7/compose/Server/x86_64/os
+name = docker-113-override
