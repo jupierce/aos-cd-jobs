@@ -162,7 +162,7 @@ Jenkins job: ${env.BUILD_URL}
             mail(to: "${MAIL_LIST_FAILURE}",
                     from: "aos-cd@redhat.com",
                     subject: "Error Refreshing Images: ${OSE_MAJOR}.${OSE_MINOR}",
-                    body: """Encoutered an error while running ${env.JOB_NAME}: ${err}
+                    body: """Encountered an error while running ${env.JOB_NAME}: ${err}
 
 
 Jenkins job: ${env.BUILD_URL}
