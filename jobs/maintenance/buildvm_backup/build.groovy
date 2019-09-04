@@ -8,7 +8,7 @@ commonlib = buildlib.commonlib
 backupPlan = [
     srcHost: 'buildvm.openshift.eng.bos.redhat.com',
     destHost: 'buildvm2.openshift.eng.bos.redhat.com',
-    backupPath: '/mnt/workspace/backups/buildvm' // must exist on both src and dest host
+    backupPath: '/mnt/workspace/backups/buildvm', // must exist on both src and dest host
     files: [
         '/etc/sysconfig/jenkins',  // config file for jenkins server
         '/etc/sysconfig/docker', // insecure registries
@@ -53,7 +53,8 @@ backupPlan = [
 
 @NonCPS
 def buildTarCommand(tarballPath) {
-    def cmd = "tar zcvf ${tarballPath}/"
+    // sudo required to read some files owned by root
+    def cmd = "sudo tar zcvf ${tarballPath}"
     for ( file in backupPlan.files ) {
         cmd += " ${file}"
     }
@@ -62,17 +63,8 @@ def buildTarCommand(tarballPath) {
 
 def stageRunBackup() {
 
-    res = commonlib.shell(
-            returnAll: true,
-            script: "hostname"
-    )
-
-    if (res.returnStatus != 0) {
-        error("Unable to query hostname")
-    }
-
-    if (res.stdout != backupPlan.srcHost) {
-        echo "This is not the backupPlan.srcHost; skipping"
+    if (env.BUILD_URL.indexOf(backupPlan.srcHost) == -1) {
+        echo "This (${env.BUILD_URL}) is not the backupPlan.srcHost (${backupPlan.srcHost}); skipping"
         return
     }
 
@@ -82,13 +74,14 @@ def stageRunBackup() {
     def tarCmd = buildTarCommand(tarballPath)
 
     def cmds = [
-        "mkdir -p ${${backupPlan.backupPath}",
-        "rm -f ${tarballPath}",
+        "mkdir -p d${backupPlan.backupPath}",
+        "sudo rm -f ${tarballPath}",
         "${tarCmd}"
     ]
 
-    if ( DRY_RUN ) {
-        echo "Would have run:\n$ {cmds.join('\n$ ')}"
+    if ( params.DRY_RUN ) {
+        def dry_run_cmds = '> ' + cmds.join('\n> ')
+        echo "Would have run:\n${dry_run_cmds}"
         return
     }
 
