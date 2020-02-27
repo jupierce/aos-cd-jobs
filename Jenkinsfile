@@ -28,7 +28,7 @@ Jenkins job: ${env.BUILD_URL}
 def mail_failure = { err ->
     mail(
         to: 'jupierce@redhat.com',
-        subject: "Error building OSE: ${OSE_MAJOR}.${OSE_MINOR}",
+        subject: "Error building OSE: ${OSE_VERSION}",
         body: """\
 Encoutered an error while running merge-and-build.sh: ${err}
 
@@ -46,6 +46,23 @@ git merge ${merge_opts} '${commit}' -m '${commit_msg}'
 """)
 }
 
+// https://issues.jenkins-ci.org/browse/JENKINS-33511
+def set_workspace() {
+    if(env.WORKSPACE == null) {
+        env.WORKSPACE = pwd()
+    }
+}
+
+// https://issues.jenkins-ci.org/browse/JENKINS-37069
+def fix_workspace_label() {
+    sh "chcon -Rt svirt_sandbox_file_t '${env.WORKSPACE}'*"
+}
+
+def version(f) {
+    def matcher = readFile(f) =~ /Version:\s+([.0-9]+)/
+    matcher ? matcher[0][1] : null
+}
+
 node('buildvm-devops') {
     properties([[
         $class: 'ParametersDefinitionProperty',
@@ -53,33 +70,14 @@ node('buildvm-devops') {
             [
                 $class: 'hudson.model.StringParameterDefinition',
                 defaultValue: '',
-                description: 'OSE Major Version',
-                name: 'OSE_MAJOR',
+                description: 'OSE Version',
+                name: 'OSE_VERSION',
             ],
             [
                 $class: 'hudson.model.StringParameterDefinition',
+                name: 'OSE_CREDENTIALS',
+                description: 'Credentials for the OSE repository',
                 defaultValue: '',
-                description: 'OSE Minor Version',
-                name: 'OSE_MINOR',
-            ],
-            [
-                $class: 'hudson.model.StringParameterDefinition',
-                name: 'OSE_REPO',
-                description: 'OSE repository url',
-                defaultValue: 'git@github.com:openshift/ose.git',
-            ],
-            [
-                $class: 'hudson.model.StringParameterDefinition',
-                name: 'ORIGIN_REPO',
-                description: 'Origin repository url',
-                defaultValue: 'https://github.com/openshift/origin.git',
-            ],
-            [
-                $class: 'hudson.model.StringParameterDefinition',
-                name: 'WEB_CONSOLE_REPO',
-                description: 'Origin web console repository url',
-                defaultValue:
-                    'https://github.com/openshift/origin-web-console.git',
             ],
         ],
     ]])
@@ -92,6 +90,8 @@ node('buildvm-devops') {
                 image = docker.build 'ose-builder', 'builder'
             }
         }
+        set_workspace()
+        fix_workspace_label()
         stage('dependencies') {
             env.GOPATH = env.WORKSPACE + '/go'
             dir(env.GOPATH + '/src/github.com/jteeuwen/go-bindata') {
@@ -103,9 +103,10 @@ node('buildvm-devops') {
         }
         stage('web console') {
             dir(env.GOPATH + '/src/github.com/openshift/origin-web-console') {
-                git url: WEB_CONSOLE_REPO
-                def v = "enterprise-${OSE_MAJOR}.${OSE_MINOR}"
-                git_merge('master', "origin/${v}", "Merge master into ${v}")
+                git url: 'https://github.com/openshift/origin-web-console.git'
+                git_merge(
+                    'master', "origin/enterprise-${OSE_VERSION}",
+                    "Merge master into enterprise-${OSE_VERSION}")
             }
         }
         stage('merge') {
@@ -116,8 +117,16 @@ node('buildvm-devops') {
                     extensions:
                         [[$class: 'LocalBranch', localBranch: 'master']],
                     userRemoteConfigs: [
-                        [name: 'upstream', url: "${ORIGIN_REPO}"],
-                        [name: 'origin', url: "${OSE_REPO}"]])
+                        [
+                            name: 'upstream',
+                            url: 'https://github.com/openshift/origin.git',
+                        ],
+                        [
+                            name: 'origin',
+                            url: 'git@github.com:openshift/ose.git',
+                            credentialsId: OSE_CREDENTIALS,
+                        ],
+                    ])
                 git_merge(
                     'master', 'upstream/master',
                     'Merge remote-tracking branch upstream/master',
@@ -130,10 +139,8 @@ GIT_REF=master COMMIT=1 hack/vendor-console.sh
 tito tag --accept-auto-changelog
 '''
             }
-            dir(env.GOPATH + '/src/github.com/openshift/ose') {
-                def v = readFile(file: 'origin.spec') =~ /Version:\s+([.0-9]+)/
-                mail_success(v[0][1])
-            }
+            mail_success(version(
+                "${env.GOPATH}/src/github.com/openshift/ose/origin.spec"))
         }
     }
 }
