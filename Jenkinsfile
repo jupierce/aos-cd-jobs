@@ -1,49 +1,36 @@
-properties(
-  [
-    disableConcurrentBuilds()
-  ]
-)
+#!/usr/bin/env groovy
 
 // https://issues.jenkins-ci.org/browse/JENKINS-33511
 def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = pwd()
-  }
+    if(env.WORKSPACE == null) {
+        env.WORKSPACE = pwd()
+    }
 }
 
+
+
 node('buildvm-devops') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      stage('clone') {
-        dir('aos-cd-jobs') {
-          checkout scm
-          sh 'git checkout master'
-        }
-      }
-      stage('run') {
-        sshagent(['openshift-bot']) { // git repo privileges stored in Jenkins credential store
-          sh '''\
-virtualenv env/
-. env/bin/activate
-pip install gitpython
-export PYTHONPATH=$PWD/aos-cd-jobs
-python aos-cd-jobs/aos_cd_jobs/pruner.py
-python aos-cd-jobs/aos_cd_jobs/updater.py
-'''
-        }
-      }
+
+    // Expose properties for a parameterized build
+    properties(
+            [[$class              : 'ParametersDefinitionProperty',
+              parameterDefinitions:
+                      [
+                              [$class: 'hudson.model.StringParameterDefinition', defaultValue: 'git@github.com:openshift/origin.git  git@github.com:openshift/origin-web-console.git git@github.com:openshift/ose.git git@github.com:openshift/openshift-ansible.git', description: 'Repositories to fork to stage', name: 'REPOS'],
+                              [$class: 'hudson.model.StringParameterDefinition', defaultValue: '', description: 'Last sprint number (e.g. "130"); stage-### will be used to archive any previous stage branch', name: 'LAST_SPRINT_NUMBER'],
+                      ]
+             ]]
+    )
+    checkout scm
+    
+    set_workspace()
+
+    if ( LAST_SPRINT_NUMBER == "" ) {
+        error( "LAST_SPRINT_NUMBER is a required parameter" )
     }
-  } catch(err) {
-    mail(
-      to: 'bbarcaro@redhat.com, jupierce@redhat.com',
-      from: "aos-cd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encoutered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
+
+    sshagent(['openshift-bot']) { // errata puddle must run with the permissions of openshift-bot to succeed
+        sh "./scripts/stagecut.sh ${LAST_SPRINT_NUMBER} ${REPOS}"
+    }
+
 }
