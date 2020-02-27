@@ -1,12 +1,13 @@
 #!/usr/bin/env groovy
 
-def mail_success(list) {
+def mail_success(list,detail) {
     mail(
         to: "${list}",
+        from: "aos-cd@redhat.com",
         replyTo: 'jupierce@redhat.com',
         subject: "[aos-devel] Cluster ${OPERATION} complete: ${CLUSTER_NAME}",
         body: """\
-https://console.${CLUSTER_NAME}.openshift.com
+${detail}
 
 Jenkins job: ${env.BUILD_URL}
 """);
@@ -22,8 +23,8 @@ node('buildvm-devops') {
                               [$class: 'hudson.model.StringParameterDefinition', defaultValue: 'jupierce@redhat.com, mwoodson@redhat.com, chmurphy@redhat.com', description: 'Success for minor cluster operation', name: 'MAIL_LIST_SUCCESS_MINOR'],
                               [$class: 'hudson.model.StringParameterDefinition', defaultValue: 'jupierce@redhat.com, mwoodson@redhat.com, chmurphy@redhat.com', description: 'Failure Mailing List', name: 'MAIL_LIST_FAILURE'],
                               [$class: 'hudson.model.ChoiceParameterDefinition', choices: "test-key\ncicd\ndev-preview-int\ndev-preview-stg\npreview", name: 'CLUSTER_NAME', description: 'The name of the cluster to affect'],
-                              [$class: 'hudson.model.ChoiceParameterDefinition', choices: "noop\ndelete\ninstall\nupgrade", name: 'OPERATION', description: 'Operation to perform'],
-                              [$class: 'hudson.model.ChoiceParameterDefinition', choices: "interactive\nquiet\nautomatic", name: 'MODE', description: 'Select automatic to prevent input prompt. Select quiet to prevent aos-devel emails.'],
+                              [$class: 'hudson.model.ChoiceParameterDefinition', choices: "noop\nreinstall\ndelete\ninstall\nupgrade", name: 'OPERATION', description: 'Operation to perform'],
+                              [$class: 'hudson.model.ChoiceParameterDefinition', choices: "interactive\nquiet\nsilent\nautomatic", name: 'MODE', description: 'Select automatic to prevent input prompt. Select quiet to prevent aos-devel emails. Select silent to prevent any success email.'],
                       ]
              ]]
     )
@@ -31,8 +32,10 @@ node('buildvm-devops') {
     // Force Jenkins to fail early if this is the first time this job has been run/and or new parameters have not been discovered.
     echo "MAIL_LIST_SUCCESS:[${MAIL_LIST_SUCCESS}], MAIL_LIST_FAILURE:[${MAIL_LIST_FAILURE}], CLUSTER_NAME:${CLUSTER_NAME}, OPERATION:${OPERATION}, MODE:${MODE}"
 
+    currentBuild.displayName = "#${currentBuild.number} - ${OPERATION} ${CLUSTER_NAME}"
+    
     if ( MODE != "automatic" ) {
-        input 'Are you certain you want to =====>${MODE}<===== the =====>${CLUSTER_NAME}<===== cluster?'
+        input "Are you certain you want to =====>${OPERATION}<===== the =====>${CLUSTER_NAME}<===== cluster?"
     }
 
     if ( OPERATION == "noop" ) {
@@ -40,28 +43,43 @@ node('buildvm-devops') {
     }
 
     // Clusters that can be deleted & installed
-    disposableCluster = CLUSTER_NAME in [ 'test-key', 'cicd', 'dev-preview-int']
+    disposableCluster = [ 'test-key', 'cicd', 'dev-preview-int'].contains( CLUSTER_NAME )
 
-    if ( MODE != "upgrade" && !disposableCluster ) {
+    if ( OPERATION != "upgrade" && !disposableCluster ) {
         error( "This script is not permitted to perform that operation" )
     }
 
     try {
+        cluster_detail = ""
+
         stage( 'Cluster operation' ) {
             sshagent([CLUSTER_NAME]) {
-                sh "ssh -o StrictHostKeyChecking=no opsmedic@use-tower1.ops.rhcloud.com ${OPERATION}"
+                if ( OPERATION == "reinstall" ) {
+                    sh "ssh -o StrictHostKeyChecking=no opsmedic@use-tower1.ops.rhcloud.com delete"
+                    sh "ssh -o StrictHostKeyChecking=no opsmedic@use-tower1.ops.rhcloud.com install"
+                } else {
+                    sh "ssh -o StrictHostKeyChecking=no opsmedic@use-tower1.ops.rhcloud.com ${OPERATION}"
+                }
+                if ( OPERATION != "delete" ) {
+                    cluster_detail = sh(returnStdout: true, script: "ssh -o StrictHostKeyChecking=no opsmedic@use-tower1.ops.rhcloud.com status").trim()
+                    echo "Gathered status:\n${cluster_detail}"
+                }
             }
         }
 
-        minorUpdate = CLUSTER_NAME in [ 'test-key', 'cicd' ] || OPERATION == "delete" || MODE == "quiet"
-        // Replace flow control with: https://jenkins.io/blog/2016/12/19/declarative-pipeline-beta/ when available
-        mail_success(minorUpdate?MAIL_LIST_SUCCESS_MINOR:MAIL_LIST_SUCCESS)
+        minorUpdate = [ 'test-key', 'cicd' ].contains( CLUSTER_NAME ) || OPERATION == "delete" || MODE == "quiet"
+        
+        if ( MODE != "silent" ) {
+            // Replace flow control with: https://jenkins.io/blog/2016/12/19/declarative-pipeline-beta/ when available
+            mail_success(minorUpdate?MAIL_LIST_SUCCESS_MINOR:MAIL_LIST_SUCCESS, cluster_detail)
+        }
 
     } catch ( err ) {
         // Replace flow control with: https://jenkins.io/blog/2016/12/19/declarative-pipeline-beta/ when available
         mail(to: "${MAIL_LIST_FAILURE}",
-            subject: "Error during ${OPERATION} on cluster ${CLUSTER_NAME}",
-            body: """Encoutered an error: ${err}
+                from: "aos-cd@redhat.com",
+                subject: "Error during ${OPERATION} on cluster ${CLUSTER_NAME}",
+                body: """Encoutered an error: ${err}
 
 Jenkins job: ${env.BUILD_URL}
 """);
