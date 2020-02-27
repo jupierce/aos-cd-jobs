@@ -1,49 +1,26 @@
-properties(
-  [
-    disableConcurrentBuilds()
-  ]
-)
 
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = pwd()
-  }
-}
+properties( [
+    [$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '', numToKeepStr: '60']],
+    disableConcurrentBuilds(),
+    [$class: 'HudsonNotificationProperty', enabled: false],
+    [$class: 'RebuildSettings', autoRebuild: false, rebuildDisabled: false],
+    [$class: 'ThrottleJobProperty', categories: [], limitOneJobWithMatchingParams: false, maxConcurrentPerNode: 0, maxConcurrentTotal: 0, paramsToUseForLimit: '', throttleEnabled: false, throttleOption: 'project'],
+    pipelineTriggers([[$class: 'TimerTrigger', spec: '0 4 * * 2,4']])] )
 
-node('buildvm-devops') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      stage('clone') {
-        dir('aos-cd-jobs') {
-          checkout scm
-          sh 'git checkout master'
-        }
-      }
-      stage('run') {
-        sshagent(['openshift-bot']) { // git repo privileges stored in Jenkins credential store
-          sh '''\
-virtualenv env/
-. env/bin/activate
-pip install gitpython
-export PYTHONPATH=$PWD/aos-cd-jobs
-python aos-cd-jobs/aos_cd_jobs/pruner.py
-python aos-cd-jobs/aos_cd_jobs/updater.py
-'''
-        }
-      }
-    }
-  } catch(err) {
-    mail(
-      to: 'bbarcaro@redhat.com, jupierce@redhat.com',
-      from: "aos-cd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encoutered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
-}
+description = ""
+failed = false
+
+b = build job: '../aos-cd-builds/build%2Fose3.3', propagate: false
+description += "${b.displayName} - ${b.result}\n"
+failed |= (b.result != "SUCCESS")
+
+b = build job: '../aos-cd-builds/build%2Fose3.4', propagate: false
+description += "${b.displayName} - ${b.result}\n"
+failed |= (b.result != "SUCCESS")
+
+b = build job: '../aos-cd-builds/build%2Fose3.5', propagate: false
+description += "${b.displayName} - ${b.result}\n"
+failed |= (b.result != "SUCCESS")
+
+currentBuild.description = description.trim()
+currentBuild.result = failed?"FAILURE":"SUCCESS"
