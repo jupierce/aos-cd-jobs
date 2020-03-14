@@ -1,0 +1,79 @@
+
+
+
+
+node('covscan') {
+    checkout scm
+    def buildlib = load("pipeline-scripts/buildlib.groovy")
+    def commonlib = buildlib.commonlib
+
+    properties(
+        [
+            buildDiscarder(
+                logRotator(
+                    artifactDaysToKeepStr: '',
+                    artifactNumToKeepStr: '',
+                    daysToKeepStr: '90',
+                )
+            ),
+            [
+                $class : 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.ocpVersionParam('BUILD_VERSION'),
+                    commonlib.mockParam(),
+                ],
+            ],
+        ]
+    )
+
+    commonlib.checkMock()
+
+    def version = BUILD_VERSION
+    def repoName = "rhaos-${version}-rhel-7-build"
+    def golang_version = commonlib.golangBuilderScannerMap.get(version, commonlib.golangBuilderScannerMap['default'])
+    def dockerfileName = "Dockerfile.${version}"
+    def imageName = "golang-scanner-${version}"
+
+    sh ""
+
+    writeFile( file: dockerfileName, text: """
+FROM registry-proxy.engineering.redhat.com/rh-osbs/openshift-golang-builder:${golang_version}
+LABEL GOLANG_SCANNER_IMAGE="${version}"
+RUN yum install -y wget
+
+# Enable epel for csmock
+RUN yum -y install epel-release
+
+# Certs necessary to install from covscan repos
+RUN wget https://password.corp.redhat.com/RH-IT-Root-CA.crt -O /etc/pki/ca-trust/source/anchors/RH-IT-Root-CA.crt --no-check-certificate
+RUN wget https://password.corp.redhat.com/legacy.crt -O /etc/pki/ca-trust/source/anchors/legacy.crt --no-check-certificate
+RUN wget https://engineering.redhat.com/Eng-CA.crt -O /etc/pki/ca-trust/source/anchors/Eng-CA.crt --no-check-certificate
+RUN update-ca-trust
+RUN update-ca-trust enable
+
+# Create a repo for 4.x's buildroot
+RUN echo -e "[${repoName}]\\ngpgcheck=0\\nenabled=1\\npriority=255\\nbaseurl=http://download.eng.bos.redhat.com/brewroot/repos/${repoName}/latest/x86_64/" > /etc/yum.repos.d/rhaos-buildroot.repo
+
+# We should already have go installed thanks to our FROM image, but if anything changes in the future..
+# RUN yum install -y "go-toolset-${golang_version}-golang"
+
+# Install the covscan repo
+RUN wget https://cov01.lab.eng.brq.redhat.com/coverity/install/covscan/covscan-rhel-7.repo -O /etc/yum.repos.d/covscan.repo
+
+RUN yum install -y cov-sa csmock csmock-plugin-coverity
+
+# A go path should be mounted in on run
+ENV GOPATH=/go
+    """
+    )
+
+    sh """
+    set -euxo pipefail
+    echo "Created dockerfile: ${dockerfileName}"
+    cat ${dockerfileName}
+    older=`sudo podman image list --filter label=GOLANG_SCANNER_IMAGE=${version} --noheading -q`
+    sudo podman build -t ${imageName} -f ${dockerfileName} .
+    sudo podman image rm \$older || true    # ignore if this fails. A scan may be running with the old container
+    """
+
+}

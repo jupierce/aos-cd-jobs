@@ -10,6 +10,17 @@ ocp3Versions = [
 // Which version of ocp4 build parameters should show by default
 ocp4DefaultVersion = "4.5"
 
+// Maps OCP version to the golang which should
+// be used to build binaries for coverity scans.
+golangBuilderScannerMap = [
+    "default": "1.13",
+    "4.5": "1.13",
+    "4.4": "1.13",
+    "4.3": "1.12",
+    "4.2": "1.12",
+    "4.1": "1.11",
+]
+
 // All buildable versions of ocp4
 ocp4Versions = [
     "4.5",
