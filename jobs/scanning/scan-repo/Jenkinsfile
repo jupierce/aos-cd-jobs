@@ -1,0 +1,320 @@
+
+
+node('covscan') {
+    checkout scm
+    def buildlib = load("pipeline-scripts/buildlib.groovy")
+    def commonlib = buildlib.commonlib
+    def slacklib = commonlib.slacklib
+
+    properties(
+        [
+            buildDiscarder(
+                logRotator(
+                    artifactDaysToKeepStr: '',
+                    artifactNumToKeepStr: '',
+                    daysToKeepStr: '365',
+                )
+            ),
+            [
+                $class : 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.ocpVersionParam('BUILD_VERSION'),
+                    string(
+                        name: 'GIT_REPO',
+                        description: 'The git repo containing source code to scan',
+                        trim: false
+                    ),
+                    string(
+                        name: 'GIT_BRANCH',
+                        description: 'The branch to scan (e.g. commit sha or "origin/<branch>")',
+                        trim: true
+                    ),
+                    string(
+                        name: 'GO_DIR',
+                        description: 'Relative path under GOPATH/src',
+                        trim: true
+                    ),
+                    string(
+                        name: 'BUILD_CMD',
+                        description: 'The command required to build the source code',
+                    ),
+                    booleanParam(   defaultValue: false,
+                                    description: 'Force a rescan of the codebase even if it was already performed',
+                                    name: 'RE_SCAN'),
+                    booleanParam(   defaultValue: false,
+                                    description: 'Force re-prompting for waiver information',
+                                    name: 'RE_WAIVE'),
+                    booleanParam(   defaultValue: false,
+                                    description: 'If true, waivers from previous commits will not be used to determine issues (i.e. all issues will be reported).',
+                                    name: 'IGNORE_PREVIOUS'),
+                    commonlib.mockParam(),
+                ],
+            ],
+        ]
+    )
+
+    commonlib.checkMock()
+
+    timestamps {
+
+        def (major, minor) = commonlib.extractMajorMinorVersionNumbers(BUILD_VERSION)
+        def imageName = "golang-scanner-${BUILD_VERSION}"
+
+        slackChannel = slacklib.to(BUILD_VERSION)
+
+        sshagent(['openshift-bot']) {
+
+            sh """
+            set -euxo pipefail
+
+            RC="repocache/${GO_DIR}"
+            if [[ -d "\$RC" ]]; then
+                pushd \$RC
+                git fetch
+                popd
+            else
+                mkdir -p "\$RC"
+                git clone ${GIT_REPO} \$RC
+            fi
+
+            rm -rf go cov gocache
+            mkdir -p go/src/${GO_DIR}
+            cp -rl \$RC/* \$RC/.* go/src/${GO_DIR} || true  # cp -rl should work if there is diskspace. Ignore errors since there are sometimes invalid links in source.
+
+            mkdir cov
+            mkdir gocache
+            """
+
+            def kmajor = 0
+            def kminor = 0
+
+            dir ("go/src/${GO_DIR}") {
+                sh "git checkout ${GIT_BRANCH}"
+                if ( fileExists('Godeps/Godeps.json') ) {
+                    kubeVer = sh(returnStdout: true, script:"""jq '(.Deps[] | select(.ImportPath | contains("k8s.io/kubernetes/pkg/api"))).Comment' -r Godeps/Godeps.json | tr -d v """).trim()
+                    (kmajor, kminor) = commonlib.extractMajorMinorVersionNumbers(kubeVer)
+                }
+                REPO_COMMIT = sh(returnStdout: true, script:"git rev-parse HEAD").trim()
+            }
+
+            currentBuild.displayName = "${currentBuild.displayName} - ${GIT_REPO} : ${REPO_COMMIT}"
+
+            SCANS_BASE_DIR = '/mnt/nfs/coverity/scans'
+            COMMIT_SCAN_DIR = "${SCANS_BASE_DIR}/${REPO_COMMIT}"  // presence indicates a scan has been performed
+            WAIVED_BASE_DIR = '/mnt/nfs/coverity/waived'
+            COMMIT_WAIVED_DIR = "${WAIVED_BASE_DIR}/${REPO_COMMIT}"  // presence indicates issues have been waived
+
+            stage('scan') {
+                sh "mkdir -p ${SCANS_BASE_DIR}"
+                sh "mkdir -p ${WAIVED_BASE_DIR}"
+
+                if ( fileExists("${COMMIT_SCAN_DIR}")) {
+                    if ( params.RE_SCAN ) {
+                        sh "rm -rf ${COMMIT_SCAN_DIR} ${COMMIT_WAIVED_DIR}"
+                    } else {
+                        echo "Detected ${COMMIT_SCAN_DIR} . Scan has already been performed. Skipping ."
+                        return // jump to the end of the stage
+                    }
+                }
+
+                envs = [ "KUBE_GIT_COMMIT=1111111111111111111111111111111111111111",
+                        "OS_GIT_MAJOR=${major}",
+                        "OS_GIT_MINOR=${minor}",
+                        "OS_GIT_PATCH=0",
+                        "OS_GIT_VERSION=${major}.${minor}.0-covscan",
+                        "SOURCE_GIT_TAG=${major}.${minor}.0-covscan",
+                        "OS_GIT_TREE_STATE=clean",
+                        "SOURCE_GIT_COMMIT=${REPO_COMMIT}",
+                        "SOURCE_GIT_URL=${GIT_REPO}",
+                        "SOURCE_DATE_EPOCH=1583914569",
+                        "OS_GIT_COMMIT=${REPO_COMMIT.substring(0,7)}",
+                        "BUILD_VERSION=v${major}.${minor}.0",
+                        "BUILD_RELEASE=202011111111",
+                        "KUBE_GIT_VERSION=v${kmajor}.${kminor}.0",
+                        "KUBE_GIT_MAJOR=${kmajor}",
+                        "KUBE_GIT_MINOR=${kminor}+",
+                       ]
+
+
+                envsString = envs.join(' ')
+
+                sh """
+                set -euxo pipefail
+                sudo podman run -u `id -u`:`id -g` -t --rm -v ${pwd()}/go:/go -v ${pwd()}/cov:/cov -v ${pwd()}/gocache:/gocache ${imageName}  /bin/sh -c 'export ${envsString}; export GOCACHE=/gocache ; export PATH=\$PATH:/opt/coverity/bin; cd /go/src/${GO_DIR}; cov-build --dir=/cov ${BUILD_CMD}'
+
+                export PATH=\$PATH:/opt/coverity/bin
+                # Because the build ran in a container, the emits must be changed to come from the buildvm2 host before they can be analyzed
+                cov-manage-emit --dir=./cov reset-host-name
+                cov-analyze  --dir=./cov "--wait-for-license" "-co" "ASSERT_SIDE_EFFECT:macro_name_lacks:^assert_(return|se)\$" "-co" "BAD_FREE:allow_first_field:true" "--include-java" "--fb-max-mem=4096" "--security" "--concurrency" --allow-unmerged-emits
+                cov-format-errors --json-output-v2 /dev/stdout --dir=./cov > ./cov/raw_results.js
+                cshtml ./cov/raw_results.js > ./cov/raw_results.html
+
+                """
+
+                archiveArtifacts(artifacts: "cov/*_results.*")
+
+                // Copy the scan results to the NFS. This only indicates the code has been scanned. No waiver is implied.
+                sh """
+                mkdir -p ${COMMIT_SCAN_DIR}
+                cp cov/*_results.* ${COMMIT_SCAN_DIR}   # The full directory can be gigs, so only copy result
+                """
+            }
+
+
+            stage('waive') {
+
+                if ( fileExists( COMMIT_WAIVED_DIR ) && params.RE_WAIVE == false ) {
+                    echo "Detected ${COMMIT_WAIVED_DIR}. Issues have already been waived. Skipping waiver input."
+                    return // end the stage
+                }
+
+                sh """
+                # If case we don't find anything, diff results are the same as raw results
+                cp ${COMMIT_SCAN_DIR}/raw_results.js ${COMMIT_SCAN_DIR}/diff_results.js
+
+                if [[ "${params.IGNORE_PREVIOUS}" == "false" ]]; then
+                    pushd ${env.WORKSPACE}/go/src/${GO_DIR}
+                    # For each of the preceding 1000 commits, skipping the HEAD commit
+                    for hash in `git --no-pager log --pretty='%H' -1000 | tail -n +2`; do
+                        if [[ -d "${WAIVED_BASE_DIR}/\$hash" ]]; then
+                            echo "Found previous commit with waived issues: ${WAIVED_BASE_DIR}/\$hash"
+                            csdiff ${COMMIT_SCAN_DIR}/raw_results.js "${WAIVED_BASE_DIR}/\$hash/raw_results.js" > ${COMMIT_SCAN_DIR}/diff_results.js
+                            break
+                        fi
+                    done
+                    popd
+                fi
+
+                cshtml ${COMMIT_SCAN_DIR}/diff_results.js > ${COMMIT_SCAN_DIR}/diff_results.html
+
+                # We could read in this into Jenkins, but the files can be >10M, so let jq figure out if there is a diff to review
+                if [[ `cat ${COMMIT_SCAN_DIR}/diff_results.js | jq '.issues | length' -r` != '0' ]]; then
+                    echo "Differences detected from previous commit."
+                    touch ${COMMIT_SCAN_DIR}/diff_results.flag
+                else
+                    rm -f ${COMMIT_SCAN_DIR}/diff_results.flag
+                fi
+
+                # Copy diffs to workspace so we can archive them
+                cp ${COMMIT_SCAN_DIR}/diff_results.* ./cov
+
+                """
+
+                archiveArtifacts(artifacts: "cov/diff_results.*")
+
+                sh """
+                set -euxo pipefail
+                scp ${COMMIT_SCAN_DIR}/raw_results.html ocp-build@rcm-guest.app.eng.bos.redhat.com:/mnt/rcm-guest/puddles/RHAOS/coverity/${REPO_COMMIT}.raw_results.html
+                scp ${COMMIT_SCAN_DIR}/diff_results.html ocp-build@rcm-guest.app.eng.bos.redhat.com:/mnt/rcm-guest/puddles/RHAOS/coverity/${REPO_COMMIT}.diff_results.html
+                """
+
+                if ( ! fileExists("${COMMIT_SCAN_DIR}/diff_results.flag") ) {
+                    echo "No scan differences detected from last commit. No waivers are required."
+                    return // end the stage
+                }
+
+                slackChannel.task("Coverity result review: ${GIT_REPO} branch: ${GIT_BRANCH}") {
+                    taskThread ->
+
+                    taskThread.failure("[NEW SCAN WAIVERS REQUIRED] Please review results for ${GIT_REPO} commit=${REPO_COMMIT}\nDifferences from a previously waived commit: http://download.eng.bos.redhat.com/rcm-guest/puddles/RHAOS/coverity/${REPO_COMMIT}.diff_results.html")
+
+                    commonlib.inputRequired() {
+                        happy = false
+                        while(!happy) {
+
+                            def raw_results_url = "http://download.eng.bos.redhat.com/rcm-guest/puddles/RHAOS/coverity/${REPO_COMMIT}.raw_results.html"
+                            def diff_results_url = "http://download.eng.bos.redhat.com/rcm-guest/puddles/RHAOS/coverity/${REPO_COMMIT}.diff_results.html"
+                            echo "Waiver details are required.."
+
+                            prompt = """Coverity has detected new issues during static analysis for ${GIT_REPO} commit=${REPO_COMMIT} .
+You must review the findings with an engineering / prodsec resource before waiving these results. If the
+findings must be fixed in the code (i.e. not WAIVED), then choose ABORT to stop the pipeline.
+
+Differences from a previously waived commit: ${diff_results_url}
+All issues: ${raw_results_url}
+"""
+                            echo prompt
+
+                            def resp = input message: prompt,
+                                submitterParameter: 'approver',
+                                parameters: [
+                                    [
+                                        $class     : 'hudson.model.ChoiceParameterDefinition',
+                                        choices    : ['WAIVE', 'ABORT'].join('\n'),
+                                        description : 'WAIVE only if an engineering resource has confirmed the findings are NOT a security risk.',
+                                        name       : 'action'
+                                    ],
+                                    string( defaultValue: '',
+                                            description: 'Link to slack thread / Jira ticket / etc where the conversation about security concerns was discussed. ',
+                                            name: 'conversation_url',
+                                            trim: true
+                                    ),
+                                    text(   defaultValue: '',
+                                            description: 'An overview of why these issues were waived. ',
+                                            name: 'waiver_overview'
+                                    ),
+                                ]
+
+                            def action = (resp instanceof String)?resp:resp.action
+
+                            switch(action) {
+                            case 'WAIVE':
+                                // just fall through
+                                break
+                            case 'ABORT':
+                                error('User chose to abort scan pipeline')
+                            }
+
+                            def waiver_details = """
+Job: ${env.BUILD_URL}
+
+Approver: ${resp.approver}
+
+Discussion: ${resp.conversation_url}
+
+Overview:\n${resp.waiver_overview}
+"""
+
+                            echo "The following waiver details will be recorded >>>>>>>>>>\n${waiver_details}\n<<<<<<<<<<<<"
+                            echo "Confirm these details.."
+
+                            def confirm = input message: "Are you completely sure you want to waive using the provided information?",
+                                parameters: [
+                                    [
+                                        $class     : 'hudson.model.ChoiceParameterDefinition',
+                                        choices    : ['YES', 'RE-ENTER'].join('\n'),
+                                        description : 'If you want to alter your reasons, select RE-ENTER.',
+                                        name       : 'action'
+                                    ],
+                                ]
+
+                            def confim_action = (confirm instanceof String)?confirm:confirm.action
+
+                            if ( confim_action == 'YES' ) {
+                                currentBuild.keepLog = true  // Don't ever prune this build
+                                happy = true // terminate the waiver input loop
+                                writeFile( file: 'waiver.txt', text: waiver_details)
+
+                                archiveArtifacts(artifacts: "waiver.txt")
+
+                                sh """
+                                cat waiver.txt > ${COMMIT_SCAN_DIR}/waiver.txt.`date +%s`
+                                # Create the link that will consider this commit's issues waived
+                                ln -sfn ${COMMIT_SCAN_DIR} ${COMMIT_WAIVED_DIR}
+                                """
+                            }
+
+                        }
+
+                    }
+
+                }
+
+
+            }
+
+        }
+    }
+
+
+}
