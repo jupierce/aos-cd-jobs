@@ -319,6 +319,67 @@ tools, as well as RHCOS bare-betal message digests.
 
 
 ######################################################################
+@cli.command("custom-message-digest", short_help="Sign a sha256sum.txt file")
+@requestor
+@click.option("--digest", required=True,
+              help="Path to the digest file to sign")
+@product
+@request_id
+@sig_keyname
+@release_name_opt
+@client_cert
+@client_key
+@env
+@noop
+@ca_certs
+@click.pass_context
+def custom_message_digest(ctx, requestor, digest, product, request_id, sig_keyname,
+                   release_name, client_cert, client_key, env, noop,
+                   ca_certs):
+    """Sign a 'message digest'. These are sha256sum.txt files produced by
+the 'sha256sum` command (hence the strange command name). In the ART
+world, this is for signing message digests from extracting OpenShift
+tools, as well as RHCOS bare-betal message digests.
+"""
+
+    with open(digest, mode='r') as f:
+        artifact = base64.b64encode(f.read())
+
+    message = {
+        "artifact": artifact,
+        "artifact_meta": {
+            "product": product,
+            "release_name": release_name,
+            "name": "sha256sum.txt.gpg",
+            "type": "message-digest",
+        },
+        "request_id": request_id,
+        "requestor": requestor,
+        "sig_keyname": sig_keyname,
+    }
+
+    validated = presend_validation(message)
+    if validated is True:
+        print("Message contains all required fields")
+        to_send = json.dumps(message)
+    else:
+        print("Message missing required field: {}".format(validated))
+        exit(1)
+
+    if noop:
+        print("Message we would have sent over the bus:")
+        print(to_send)
+    else:
+        producer, consumer = get_producer_consumer(env, client_cert, client_key, ca_certs)
+        consumer_thread = consumer_start(consumer)
+        producer_send_msg(producer, {}, to_send)
+        print("Message we sent over the bus:")
+        print(to_send)
+        print("Submitted request for signing. The mirror-artifacts job should be triggered when a response is sent back")
+        print("Waiting for consumer to receive data back from request")
+        consumer_thread.join()
+
+######################################################################
 @cli.command("json-digest", short_help="Sign a JSON digest claim")
 @requestor
 @product
